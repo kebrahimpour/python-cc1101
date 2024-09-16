@@ -19,9 +19,64 @@ import unittest.mock
 
 import pytest
 
-from cc1101.options import PacketLengthMode
+# pylint: disable=import-private-name
+import cc1101
+from cc1101.options import PacketLengthMode, _TransceiveMode
 
 # pylint: disable=protected-access
+
+
+@pytest.mark.parametrize(
+    ("pktctrl0_before", "pktctrl0_after"),
+    [
+        (0b01000101, 0b00000101),
+        (0b00000101, 0b00000101),
+        (0b11111111, 0b10111111),
+    ],
+)
+def test_disable_data_whitening(
+    transceiver: cc1101.CC1101, pktctrl0_before: int, pktctrl0_after: int
+) -> None:
+    xfer_mock = transceiver._spi.xfer
+    xfer_mock.return_value = [0xFF] * 2  # chip status byte
+    with unittest.mock.patch.object(
+        transceiver, "_read_single_byte", return_value=pktctrl0_before
+    ):
+        transceiver._disable_data_whitening()
+    xfer_mock.assert_called_once_with([0x08 | 0x40, pktctrl0_after])
+
+
+def test__get_transceive_mode(transceiver: cc1101.CC1101) -> None:
+    xfer_mock = transceiver._spi.xfer
+    xfer_mock.return_value = [0x00, 0b01000101]
+    assert transceiver._get_transceive_mode() == _TransceiveMode.FIFO
+    xfer_mock.assert_called_once_with([0x08 | 0x80, 0])
+    xfer_mock.return_value = [0x00, 0b00110101]
+    assert transceiver._get_transceive_mode() == _TransceiveMode.ASYNCHRONOUS_SERIAL
+
+
+@pytest.mark.parametrize(
+    ("pktctrl0_before", "mode", "pktctrl0_after"),
+    [
+        (0b01000101, _TransceiveMode.FIFO, 0b01000101),
+        (0b01000101, _TransceiveMode.SYNCHRONOUS_SERIAL, 0b01010101),
+        (0b01000101, _TransceiveMode.ASYNCHRONOUS_SERIAL, 0b01110101),
+        (0b11111111, _TransceiveMode.FIFO, 0b11001111),
+    ],
+)
+def test__set_transceive_mode(
+    transceiver: cc1101.CC1101,
+    pktctrl0_before: int,
+    mode: _TransceiveMode,
+    pktctrl0_after: int,
+) -> None:
+    xfer_mock = transceiver._spi.xfer
+    xfer_mock.return_value = [0xFF] * 2  # chip status byte
+    with unittest.mock.patch.object(
+        transceiver, "_read_single_byte", return_value=pktctrl0_before
+    ):
+        transceiver._set_transceive_mode(mode)
+    xfer_mock.assert_called_once_with([0x08 | 0x40, pktctrl0_after])
 
 
 @pytest.mark.parametrize(

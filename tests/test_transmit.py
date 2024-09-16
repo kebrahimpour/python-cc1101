@@ -3,6 +3,7 @@ import unittest.mock
 
 import pytest
 
+import cc1101.addresses
 import cc1101.options
 
 # pylint: disable=protected-access
@@ -52,6 +53,25 @@ def test_transmit_unexpected_payload_len(transceiver, packet_length, payload):
     ):
         with pytest.raises(ValueError, match=r"\bpayload length\b"):
             transceiver.transmit(payload)
+
+
+def test_transmit_not_idle(transceiver: cc1101.CC1101) -> None:
+    with unittest.mock.patch.object(
+        transceiver,
+        "get_packet_length_mode",
+        return_value=cc1101.options.PacketLengthMode.VARIABLE,
+    ), unittest.mock.patch.object(
+        transceiver, "get_packet_length_bytes", return_value=42 // 2
+    ), unittest.mock.patch.object(
+        transceiver,
+        "get_main_radio_control_state_machine_state",
+        return_value=cc1101.MainRadioControlStateMachineState.RX,
+    ), pytest.raises(
+        RuntimeError,
+        match=r"^device must be idle before transmission \(current marcstate: RX\)$",
+    ):
+        transceiver.transmit(b"\x01\x02\x03")
+    transceiver._spi.xfer.assert_not_called()
 
 
 @pytest.mark.parametrize("payload", (b"\0", b"\xaa\xbb\xcc", bytes(range(42))))
@@ -109,3 +129,23 @@ def test_transmit_variable(transceiver, payload):
         unittest.mock.call([0x3F | 0x40] + [len(payload)] + list(payload)),
         unittest.mock.call([0x35]),  # start transmission
     ]
+
+
+def test_asynchronous_transmission(transceiver: cc1101.CC1101) -> None:
+    with unittest.mock.patch.object(
+        transceiver, "_set_transceive_mode"
+    ) as set_mode_mock, unittest.mock.patch.object(
+        transceiver, "_command_strobe"
+    ) as command_mock:
+        with transceiver.asynchronous_transmission() as input_pin:
+            set_mode_mock.assert_called_once_with(
+                cc1101.options._TransceiveMode.ASYNCHRONOUS_SERIAL
+            )
+            set_mode_mock.reset_mock()
+            command_mock.assert_called_once_with(cc1101.addresses.StrobeAddress.STX)
+            command_mock.reset_mock()
+            transceiver._spi.xfer.assert_not_called()
+            assert input_pin == cc1101.Pin.GDO0
+        set_mode_mock.assert_called_once_with(cc1101.options._TransceiveMode.FIFO)
+        command_mock.assert_called_once_with(cc1101.addresses.StrobeAddress.SIDLE)
+        transceiver._spi.xfer.assert_not_called()
